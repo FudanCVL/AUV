@@ -1,0 +1,197 @@
+# @package _global_
+defaults:
+  - _self_
+
+stage: stage1
+variant: base_plus
+variants:
+  base_plus:
+    config: configs/sam2.1/sam2.1_hiera_b+.yaml
+    checkpoint: checkpoints/sam2.1_hiera_base_plus.pt
+  tiny:
+    config: configs/sam2.1/sam2.1_hiera_t.yaml
+    checkpoint: checkpoints/sam2.1_hiera_tiny.pt
+  small:
+    config: configs/sam2.1/sam2.1_hiera_s.yaml
+    checkpoint: checkpoints/sam2.1_hiera_small.pt
+  large:
+    config: configs/sam2.1/sam2.1_hiera_l.yaml
+    checkpoint: checkpoints/sam2.1_hiera_large.pt
+
+stages:
+  stage1:
+    experiment_log_dir: runs/sam2_${variant}/stage1
+    max_epochs: 10
+    num_frames_per_clip: 1
+    pretrained_uap: null
+    lr: 1.0e-3
+    lr_scheduler:
+      _target_: fvcore.common.param_scheduler.CosineParamScheduler
+      start_value: ${scratch.lr}
+      end_value: 1.0e-4
+    weight_l2: 1
+  stage2:
+    experiment_log_dir: runs/sam2_${variant}/stage2
+    max_epochs: 10
+    num_frames_per_clip: 8
+    pretrained_uap: ${stages.stage1.experiment_log_dir}/checkpoints/checkpoint.pt
+    lr: 1.0e-4
+    lr_scheduler:
+      _target_: fvcore.common.param_scheduler.ConstantParamScheduler
+      value: ${scratch.lr}
+    weight_l2: 10  # Effective scale: 10 / clip_length.
+    weight_spatial_uniform: 1  # Sum over subsequent frames (7), divided by clip length.
+
+paths:
+  vos_root: /path/to/YouTubeVOS2018/train/
+  experiment_log_dir: ${stages.${stage}.experiment_log_dir}
+  checkpoint_path: ${variants.${variant}.checkpoint}
+
+scratch:
+  resolution: 1024
+  train_norm_mean: [0.485, 0.456, 0.406]
+  train_norm_std: [0.229, 0.224, 0.225]
+  train_batch_size: 1
+  num_train_workers: 10
+  lr: ${stages.${stage}.lr}
+  wd: 0.1
+
+vos:
+  train_transforms:
+    - _target_: training.dataset.transforms.ComposeAPI
+      transforms:
+        - _target_: training.dataset.transforms.RandomHorizontalFlip
+          consistent_transform: true
+          p: 0.5
+        - _target_: training.dataset.transforms.RandomAffine
+          degrees: 25
+          shear: 20
+          image_interpolation: bilinear
+          consistent_transform: true
+        - _target_: training.dataset.transforms.RandomResizeAPI
+          sizes: ${scratch.resolution}
+          square: true
+          consistent_transform: true
+        - _target_: training.dataset.transforms.ColorJitter
+          consistent_transform: true
+          brightness: 0.1
+          contrast: 0.03
+          saturation: 0.03
+          hue: null
+        - _target_: training.dataset.transforms.RandomGrayscale
+          p: 0.05
+          consistent_transform: true
+        - _target_: training.dataset.transforms.ColorJitter
+          consistent_transform: false
+          brightness: 0.1
+          contrast: 0.05
+          saturation: 0.05
+          hue: null
+        - _target_: training.dataset.transforms.ToTensorAPI
+        - _target_: training.dataset.transforms.NormalizeAPI
+          mean: ${scratch.train_norm_mean}
+          std: ${scratch.train_norm_std}
+
+trainer:
+  _target_: training.trainer.Trainer
+  mode: train_only
+  max_epochs: ${stages.${stage}.max_epochs}
+  accelerator: cuda
+  seed_value: 123
+  val_epoch_freq: 10
+  model:
+    _target_: training.model.sam2.build_tracker_for_training
+    model_config: ${variants.${variant}.config}
+    image_encoder:
+      trunk:
+        drop_path_rate: 0.1
+    checkpoint_path: ${paths.checkpoint_path}
+    pretrained_uap: ${stages.${stage}.pretrained_uap}
+    image_size: ${scratch.resolution}
+    img_mean: ${scratch.train_norm_mean}
+    img_std: ${scratch.train_norm_std}
+    freeze_image_encoder: true
+    prob_to_use_pt_input_for_train: 0.0
+    num_frames_to_correct_for_train: 0
+    num_init_cond_frames_for_train: 1
+    rand_init_cond_frames_for_train: false
+    num_correction_pt_per_frame: 0
+  data:
+    train:
+      _target_: training.dataset.sam2_datasets.TorchTrainMixedDataset
+      phases_per_epoch: 1
+      datasets:
+        - _target_: training.dataset.utils.RepeatFactorWrapper
+          dataset:
+            _target_: training.dataset.utils.ConcatDataset
+            datasets:
+              - _target_: training.dataset.vos_dataset.VOSDataset
+                transforms: ${vos.train_transforms}
+                training: true
+                video_dataset:
+                  _target_: training.dataset.vos_raw_dataset.PNGRawDataset
+                  img_folder: ${paths.vos_root}/JPEGImages
+                  gt_folder: ${paths.vos_root}/Annotations
+                  file_list_txt: sam2/training/assets/ytvos18_train.txt
+                sampler:
+                  _target_: training.dataset.vos_sampler.RandomUniformSampler
+                  num_frames: ${stages.${stage}.num_frames_per_clip}
+                  max_num_objects: 1
+                multiplier: 1
+      batch_sizes: ["${scratch.train_batch_size}"]
+      num_workers: ${scratch.num_train_workers}
+      shuffle: true
+      pin_memory: true
+      drop_last: true
+      collate_fn:
+        _target_: training.utils.data_utils.collate_fn
+        _partial_: true
+        dict_key: all
+  loss:
+    all:
+      _target_: training.loss_fns_uap.MemoryFeatureAttackLoss
+      weight_dict: {loss_memory: 1.0}
+      weight_l2: ${stages.${stage}.weight_l2}
+      weight_repel_l2: 1
+      use_l2: true
+      use_repel_l2: true
+      sigmoid_scale: 20.0
+      sigmoid_bias: -10.0
+      use_spatial_uniform: true
+      weight_spatial_uniform: ${stages.stage2.weight_spatial_uniform}
+  optim:
+    amp:
+      enabled: true
+      amp_dtype: bfloat16
+    optimizer:
+      _target_: torch.optim.AdamW
+    gradient_clip:
+      _target_: training.optimizer.GradientClipper
+      max_norm: 0.1
+      norm_type: 2
+    param_group_modifiers: null
+    options:
+      lr:
+        - scheduler: ${stages.${stage}.lr_scheduler}
+      weight_decay:
+        - scheduler:
+            _target_: fvcore.common.param_scheduler.ConstantParamScheduler
+            value: ${scratch.wd}
+  distributed:
+    backend: nccl
+    find_unused_parameters: true
+  checkpoint:
+    save_dir: ${launcher.experiment_log_dir}/checkpoints
+    save_freq: 1
+  logging:
+    tensorboard_writer:
+      _target_: training.utils.logger.make_tensorboard_logger
+      log_dir: ${launcher.experiment_log_dir}/tensorboard
+      flush_secs: 120
+      should_log: true
+    log_dir: ${launcher.experiment_log_dir}/logs
+    log_freq: 10
+launcher:
+  num_nodes: 1
+  gpus_per_node: 1
+  experiment_log_dir: ${paths.experiment_log_dir}
