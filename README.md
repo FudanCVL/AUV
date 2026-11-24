@@ -222,9 +222,10 @@ We are inspired by excellent VOS models such as [SAM2](https://github.com/facebo
 If you find this work useful, please consider citing:
 
 ```bibtex
-@misc{shen2026auv,
+@inproceedings{shen2026auv,
   title={Attack-Inference Aligned Universal Adversarial Attacks on Video Object Segmentation},
   author={Shen, Ruiqi and Liu, Chang and Ding, Henghui},
+  booktitle={Advances in Neural Information Processing Systems},
   year={2026},
   url={https://github.com/FudanCVL/AUV}
 }
