@@ -19,7 +19,7 @@ Attacks on Video Object Segmentation
 
 <p align="center">
   <a href="https://henghuiding.com/AUV"><img src="https://img.shields.io/badge/Project-Page-007ec6?style=flat" alt="Project Page"></a>
-  <a href="TODO"><img src="https://img.shields.io/badge/Paper-PDF-b31b1b?style=flat" alt="Paper PDF"></a>
+  <a href="https://arxiv.org/abs/2611.32658"><img src="https://img.shields.io/badge/Paper-PDF-b31b1b?style=flat" alt="Paper PDF"></a>
 </p>
 
 <p align="center">
@@ -165,7 +165,7 @@ For example, train SAM3 attack with:
 python sam3/train/train.py --num-gpus 1
 ```
 
-You may reduce the default 10 epochs per stage in `attack.yaml` to 5. It can still retain SOTA attack performance.
+You can reduce the default 10 epochs per stage in `attack.yaml` to 5. It can still retain SOTA attack performance.
 
 ## 🚀 Inference
 
